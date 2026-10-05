@@ -1,0 +1,5 @@
+private_course/
+labs_solutions/
+.DS_Store
+__pycache__/
+.venv/
