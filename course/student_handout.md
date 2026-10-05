@@ -264,9 +264,9 @@ for fut in as_completed(futures):
                         # inspect swallow every error
 ```
 
-Pool size: CPU-bound → `len(os.sched_getaffinity(0))` (**not**
-`os.cpu_count()`, which lies inside Docker/SLURM). I/O-bound → many more
-than cores.
+Pool size: CPU-bound → `os.process_cpu_count()` (3.13+; **not**
+`os.cpu_count()`, which counts the whole machine on a SLURM node or a pinned
+container). I/O-bound → many more than cores.
 
 **Process pitfalls**
 
@@ -380,13 +380,12 @@ processes    full isolation, highest start-up and transfer cost
 ## Running the labs
 
 ```bash
-cd labs
-python3.14 lab1_sequences.py     # each run prints pass/fail per task
-python3.14 lab4_concurrency.py   # MUST be a terminal, not a notebook
+uv sync                                         # once: Python 3.14 + pytest
+uv run pytest tests/test_lab1_sequences.py      # one lab's tests; add -v to list them
+uv run python -m labs.lab4_concurrency         # experiments: a terminal, never a notebook
 
-# Lab 5 is meant to be run TWICE — same binary, only the GIL differs
-python3.14t -X gil=1 lab5_freethreading.py
-python3.14t          lab5_freethreading.py
+# Lab 5 is meant to be run TWICE: same binary, only the GIL differs
+uv python install 3.14t
+uv run --no-project --python 3.14t python -X gil=1 -m labs.lab5_freethreading
+uv run --no-project --python 3.14t python -m labs.lab5_freethreading
 ```
-
-Get the interpreters with `uv python install 3.14 3.14t`.

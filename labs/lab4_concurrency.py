@@ -1,56 +1,74 @@
+"""Lab 4 — Threads, processes and the GIL.
+
+Fluent Python, 2nd ed., chapters 19, 20 and 21. About 22 minutes.
+
+Implement the functions until their tests pass, then run the experiments::
+
+    uv run pytest tests/test_lab4_concurrency.py
+    uv run python -m labs.lab4_concurrency
+
+Run this from a terminal, never from a notebook. Process pools re-import the
+main module in every worker, and a notebook has no importable main module, so
+``ProcessPoolExecutor`` hangs or fails there. For the same reason the
+``if __name__ == "__main__":`` guard at the bottom is mandatory. Since 3.14 no
+platform starts workers with ``fork`` by default (Linux uses ``forkserver``,
+macOS and Windows use ``spawn``), so the guard matters everywhere.
+
+Tasks 1, 3 and 4 are the core of the lab, Task 5 is a bonus and Task 6 is the
+capstone. Task 2 is written: fill in its table even if you run out of time
+for the code. Lab 5 continues with free-threading.
+
+Task 2 — Measure, then explain
+------------------------------
+Run the experiments and fill in this table with what YOUR machine reports::
+
+                  serial    threads    processes
+    CPU-bound     ......    .......    .........
+    I/O-bound     ......    .......
+
+a) Why do threads not speed up ``cpu_task``? Be precise about what the GIL
+   does and does not lock.
+b) Why are threads sometimes *slower* than serial for ``cpu_task``?
+c) Why do threads work perfectly well for ``io_task``?
+d) Processes beat threads on ``cpu_task``, but the speedup stays below the
+   number of cores. Name two places the missing time goes.
+e) You replace ``cpu_task`` with a NumPy matrix product of the same duration.
+   Predict the thread result and justify it.
 """
-LAB 4 — Threads, processes, the GIL                (~22 min)
-Python 3.14. Fluent Python, 2nd ed.: chapters 19, 20 and 21.
 
-!! RUN THIS AS A SCRIPT FROM A TERMINAL, NOT IN A NOTEBOOK !!
-
-    python3.14 lab4_concurrency.py
-
-Process pools re-import the __main__ module in each worker. A notebook has no
-importable __main__, so ProcessPoolExecutor either hangs or raises there.
-The `if __name__ == "__main__":` guard at the bottom is mandatory for the
-same reason — without it, each worker would re-run the whole script and
-recursively spawn more workers. Since 3.14 the default start method on Linux
-is "forkserver" rather than "fork", which makes that guard load-bearing on
-every platform, not just Windows and macOS.
-
-Tasks 1-4 are core, 5 is bonus, 6 is the capstone.
-Lab 5 continues into free-threading.
-"""
-
+import multiprocessing
 import os
 import sys
+import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from collections.abc import Callable, Iterable
+from concurrent.futures import ProcessPoolExecutor
 
-from common import run_checks, timed
+from labs.common import timed
 
-# On a laptop these are the same. On a SLURM node, in Docker, or in a k8s pod
-# they are NOT: cpu_count() reports the machine, sched_getaffinity() reports
-# what you are actually allowed to use. Sizing a pool with cpu_count() on a
-# shared cluster is how you get throttled.
-N_CPU = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+# The CPUs this process may actually run on. On a laptop it equals
+# os.cpu_count(); on a SLURM node or a container pinned to a CPU set it can be
+# far lower. Sizing a pool with os.cpu_count() on a shared node gets you throttled.
+CPUS = os.process_cpu_count() or 1
 
 
 def describe_runtime() -> str:
-    """Always print this before a benchmark. Numbers without it are useless."""
-    import multiprocessing as mp
+    """Describe the interpreter and machine. Print it before any benchmark."""
     gil = "on" if sys._is_gil_enabled() else "OFF (free-threaded)"
-    return (f"{sys.implementation.name} {sys.version.split()[0]} | GIL {gil} | "
-            f"{N_CPU} usable CPU(s) | start method: {mp.get_start_method()}")
+    return (
+        f"Python {sys.version.split()[0]} | GIL {gil} | {CPUS} usable CPUs"
+        f" | start method: {multiprocessing.get_start_method()}"
+    )
 
 
-# ---------------------------------------------------------------------------
-# The two workloads. Both must be module-level functions so they can be
-# pickled and sent to worker processes.
-# ---------------------------------------------------------------------------
+# Both workloads live at module level, so they can be pickled to worker processes.
+
 
 def cpu_task(n: int) -> int:
-    """Pure-Python CPU work: count primes below n. Holds the GIL throughout."""
+    """Count the primes below ``n`` in pure Python. Holds the GIL throughout."""
     count = 0
     for x in range(2, n):
-        limit = int(x ** 0.5)
-        for d in range(2, limit + 1):
+        for d in range(2, int(x**0.5) + 1):
             if x % d == 0:
                 break
         else:
@@ -59,185 +77,142 @@ def cpu_task(n: int) -> int:
 
 
 def io_task(delay: float) -> float:
-    """Simulated network call. time.sleep RELEASES the GIL."""
+    """Simulate a network call. ``time.sleep`` releases the GIL while it waits."""
     time.sleep(delay)
     return delay
 
 
-# ---------------------------------------------------------------------------
-# TASK 1 — Three ways to run the same work
-#
-# Implement the three runners. All three take a function and a list of
-# arguments and return the list of results IN INPUT ORDER.
-#
-# Use concurrent.futures for 1b and 1c — do not hand-roll threading.Thread.
-# ---------------------------------------------------------------------------
+def run_serial[A, R](fn: Callable[[A], R], args: Iterable[A]) -> list[R]:
+    """Call ``fn`` on each argument, one after the other.
 
-def run_serial(fn, args: list) -> list:
+    Task 1 — Three ways to run the same work. All three runners return the
+    results in input order. Use ``concurrent.futures`` for the two pooled
+    runners, never raw ``threading.Thread`` objects.
+    """
     raise NotImplementedError
 
 
-def run_threads(fn, args: list, workers: int = 4) -> list:
+def run_threads[A, R](fn: Callable[[A], R], args: Iterable[A], workers: int = 4) -> list[R]:
+    """Like ``run_serial``, on a pool of ``workers`` threads."""
     raise NotImplementedError
 
 
-def run_processes(fn, args: list, workers: int = 4) -> list:
+def run_processes[A, R](fn: Callable[[A], R], args: Iterable[A], workers: int = 4) -> list[R]:
+    """Like ``run_serial``, on a pool of ``workers`` processes."""
     raise NotImplementedError
 
-
-# ---------------------------------------------------------------------------
-# TASK 2 — Measure, then explain
-#
-# Run benchmark() (called automatically at the bottom) and fill in this table
-# from what you actually observe on YOUR machine:
-#
-#                     serial     threads    processes
-#   CPU-bound         ......     ......     ......
-#   I/O-bound         ......     ......     ......
-#
-# Answer in writing:
-#   a) Why do threads not speed up cpu_task? Be precise about what the GIL
-#      does and does not lock.
-#   b) Why are threads sometimes *slower* than serial for cpu_task?
-#   c) Why do threads work perfectly well for io_task?
-#   d) Processes beat threads on cpu_task but the speedup is below N_CPU.
-#      Name two sources of the missing time.
-#   e) You replace cpu_task with a numpy matrix multiplication of the same
-#      duration. Predict the thread result and justify it.
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# TASK 3 — A race condition
-#
-# `RacyCounter.increment` is not thread-safe: `+= 1` is load, add, store, and
-# the interpreter can switch threads between those steps.
-#
-# 3a. Run demo_race(RacyCounter) and see whether you can make it fail on your
-#     machine. On many machines it will NOT lose a single increment, even
-#     with millions of iterations. That is the point: the bug is real and the
-#     test passes anyway. WideRacyCounter has the same bug with a wider
-#     window and loses ~75% of its increments every time.
-# 3b. Implement SafeCounter using threading.Lock as a context manager.
-# 3c. In a comment: describe a third approach that needs no lock at all.
-# ---------------------------------------------------------------------------
 
 N_INCREMENTS = 200_000
 N_WIDE = 20_000
 
 
 class RacyCounter:
-    """The realistic bug: += is load, add, store — three separate bytecodes."""
+    """The realistic bug: ``+=`` is a load, an add and a store."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.value = 0
 
-    def increment(self):
+    def increment(self) -> None:
         self.value += 1
 
 
 class WideRacyCounter:
-    """The same bug, with the window forced open so it always fires."""
+    """The same bug, with the window forced open so that it fires every time."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.value = 0
 
-    def increment(self):
-        tmp = self.value
-        time.sleep(0)            # an explicit yield point: hand off the GIL
-        self.value = tmp + 1
+    def increment(self) -> None:
+        current = self.value
+        time.sleep(0)  # an explicit yield point: hand the GIL to another thread
+        self.value = current + 1
 
 
 class SafeCounter:
-    def __init__(self):
+    """A counter that never loses an increment.
+
+    Task 3 — A race condition.
+
+    a) Run the experiments: does ``RacyCounter`` lose increments on your
+       machine? On many machines it loses none, even over millions of
+       increments. The bug is real and the test passes anyway.
+       ``WideRacyCounter`` has the same bug with a wider window and loses
+       most of its increments, every run.
+    b) Implement this class, using a ``threading.Lock`` as a context manager.
+    c) In a comment, describe a third approach that needs no lock at all.
+    """
+
+    def __init__(self) -> None:
         raise NotImplementedError
 
-    def increment(self):
+    def increment(self) -> None:
         raise NotImplementedError
 
 
-def hammer(counter, times: int = N_INCREMENTS):
-    for _ in range(times):
-        counter.increment()
-
-
-def demo_race(counter_cls, n_threads: int = 4, times: int = N_INCREMENTS) -> int:
-    import threading
+def demo_race(counter_cls: type, n_threads: int = 4, times: int = N_INCREMENTS) -> int:
+    """Increment one shared counter ``times`` times from each of ``n_threads`` threads."""
     counter = counter_cls()
-    threads = [threading.Thread(target=hammer, args=(counter, times))
-               for _ in range(n_threads)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+
+    def hammer() -> None:
+        for _ in range(times):
+            counter.increment()
+
+    threads = [threading.Thread(target=hammer) for _ in range(n_threads)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
     return counter.value
 
-
-# ---------------------------------------------------------------------------
-# TASK 4 — What breaks in a process pool
-#
-# 4a. Uncomment the lambda line in _t4 and observe the error. What exactly
-#     cannot cross the process boundary, and why? Name three other things
-#     that fail the same way.
-# 4b. `send_big_payload` measures the cost of shipping data to workers.
-#     Run it. What does the wall time tell you about ProcessPoolExecutor and
-#     large arrays? What are the two standard fixes?
-# 4c. Implement chunked_map: same as executor.map, but pass a chunksize so
-#     that 10_000 tiny tasks are not sent one at a time.
-# ---------------------------------------------------------------------------
 
 def tiny_task(x: int) -> int:
     return x * x
 
 
-def chunked_map(fn, args: list, workers: int = 4, chunksize: int = 500) -> list:
-    """Like run_processes, but batching arguments into chunks per worker."""
+def chunked_map[A, R](fn: Callable[[A], R], args: Iterable[A], workers: int = 4, chunksize: int = 500) -> list[R]:
+    """Like ``run_processes``, but ship the arguments to workers in chunks.
+
+    Task 4 — What breaks in a process pool.
+
+    a) Uncomment the lambda line at the bottom of this file and run it. What
+       exactly cannot cross the process boundary, and why? Name three other
+       things that fail the same way.
+    b) Uncomment ``send_big_payload()`` and run it. What does the wall time
+       tell you about shipping large data to a process pool? What are the two
+       standard fixes?
+    c) Implement this function, so that 10,000 tiny tasks are not sent to the
+       workers one at a time.
+    d) Since 3.14 no platform defaults to ``fork``. What does that mean for a
+       worker that reads a module-level global assigned inside
+       ``if __name__ == "__main__":``?
+    """
     raise NotImplementedError
-
-
-# 4d. Print multiprocessing.get_start_method(). On Python 3.14 under Linux you
-#     should see "forkserver", not "fork" — the default changed. Explain what
-#     that means for a worker function that reads a module-level global set
-#     inside `if __name__ == "__main__":`. (Hint: forkserver re-imports the
-#     module as __mp_main__, so the guard body never runs in the worker.)
 
 
 def send_big_payload(n_rows: int = 200_000, workers: int = 2) -> None:
-    """Each call ships a large list to a worker. Watch the clock."""
+    """Sum a large list in worker processes four times, and time it."""
     payload = list(range(n_rows))
-    with timed(f"pickling {n_rows}-element list x4"):
-        with ProcessPoolExecutor(max_workers=workers) as ex:
-            list(ex.map(sum, [payload] * 4))
+    with timed(f"4 x sum of a {n_rows:,}-item list"), ProcessPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(sum, [payload] * 4))
 
-
-# ---------------------------------------------------------------------------
-# TASK 5 (BONUS) — asyncio
-#
-# Reimplement the I/O benchmark with asyncio: run all the sleeps concurrently
-# in ONE thread and return the results in order.
-# Use asyncio.sleep (never time.sleep — say why in a comment) and
-# asyncio.gather.
-# ---------------------------------------------------------------------------
 
 async def async_io_task(delay: float) -> float:
+    """The coroutine version of ``io_task``.
+
+    Task 5 (bonus) — asyncio. Use ``asyncio.sleep``, and say in a comment why
+    ``time.sleep`` would be a disaster here.
+    """
     raise NotImplementedError
 
 
-def run_async(delays: list[float]) -> list[float]:
+def run_async(delays: Iterable[float]) -> list[float]:
+    """Run ``async_io_task`` for every delay concurrently, in a single thread.
+
+    Return the results in input order. Use ``asyncio.gather`` inside
+    ``asyncio.run``.
+    """
     raise NotImplementedError
 
-
-# ---------------------------------------------------------------------------
-# TASK 6 (CAPSTONE) — Pick the right tool per stage
-#
-# A mini ETL with two stages:
-#   stage 1: fetch 12 shards   -> I/O-bound  (io_task, 0.15s each)
-#   stage 2: parse each shard  -> CPU-bound  (cpu_task, 20_000 each)
-#
-# Implement etl() so that EACH stage uses the executor that suits it.
-# Return the list of stage-2 results. Then compare your total wall time
-# against the fully serial version and against using one executor for both.
-# ---------------------------------------------------------------------------
 
 SHARDS = 12
 FETCH_DELAY = 0.15
@@ -245,77 +220,48 @@ PARSE_SIZE = 20_000
 
 
 def etl() -> list[int]:
+    """Fetch ``SHARDS`` shards, then parse each one. Return the parse results.
+
+    Task 6 (capstone) — The right tool for each stage.
+
+    * Fetching a shard is ``io_task(FETCH_DELAY)``: I/O-bound.
+    * Parsing a shard is ``cpu_task(PARSE_SIZE)``: CPU-bound.
+
+    Give each stage the executor that suits it. Then time it against a fully
+    serial version, and against one executor shared by both stages.
+    """
     raise NotImplementedError
 
 
-# ---------------------------------------------------------------------------
-def benchmark():
-    print(f"\n--- benchmark: {describe_runtime()} ---")
+def benchmark() -> None:
     cpu_args = [300_000] * 4
     io_args = [0.25] * 8
 
-    print(" CPU-bound (4 x count primes below 300k):")
-    with timed("   serial"):
+    print("\nCPU-bound: 4 x count the primes below 300,000")
+    with timed("serial"):
         run_serial(cpu_task, cpu_args)
-    with timed("   threads(4)"):
+    with timed("threads (4)"):
         run_threads(cpu_task, cpu_args, 4)
-    with timed("   processes(4)"):
+    with timed("processes (4)"):
         run_processes(cpu_task, cpu_args, 4)
 
-    print(" I/O-bound (8 x sleep 0.25s):")
-    with timed("   serial"):
+    print("\nI/O-bound: 8 x sleep 0.25 s")
+    with timed("serial"):
         run_serial(io_task, io_args)
-    with timed("   threads(8)"):
+    with timed("threads (8)"):
         run_threads(io_task, io_args, 8)
 
 
-# ---------------------------------------------------------------------------
-def _t1():
-    args = [10_000, 20_000, 5_000]
-    expected = [cpu_task(a) for a in args]
-    assert run_serial(cpu_task, args) == expected
-    assert run_threads(cpu_task, args, 3) == expected, "order not preserved"
-    assert run_processes(cpu_task, args, 2) == expected, "order not preserved"
-
-
-def _t3():
-    assert demo_race(SafeCounter, 4) == 4 * N_INCREMENTS
-
-
-def _t4():
-    # 4a: uncomment to see the failure, then re-comment.
-    # with ProcessPoolExecutor(max_workers=2) as ex:
-    #     list(ex.map(lambda x: x * x, range(4)))
-    got = chunked_map(tiny_task, list(range(10_000)), workers=2, chunksize=1000)
-    assert got == [x * x for x in range(10_000)]
-
-
-def _t5():
-    out = run_async([0.05, 0.02, 0.03])
-    assert out == [0.05, 0.02, 0.03], out
-
-
-def _t6():
-    out = etl()
-    assert len(out) == SHARDS
-    assert all(v == cpu_task(PARSE_SIZE) for v in out)
-
-
 if __name__ == "__main__":
-    run_checks("Lab 4 — concurrency", [
-        ("1  run_serial/threads/processes", _t1),
-        ("3  SafeCounter", _t3),
-        ("4  chunked_map", _t4),
-        ("5  run_async (bonus)", _t5),
-        ("6  etl (capstone)", _t6),
-    ])
-    print(f"\n  RacyCounter     -> {demo_race(RacyCounter, 4):>9,}"
-          f"   (expected {4 * N_INCREMENTS:,})")
-    print(f"  WideRacyCounter -> "
-          f"{demo_race(WideRacyCounter, 4, N_WIDE):>9,}"
-          f"   (expected {4 * N_WIDE:,})")
+    print(describe_runtime())
+
+    print(f"\nRacyCounter      {demo_race(RacyCounter):>9,} / {4 * N_INCREMENTS:,}")
+    print(f"WideRacyCounter  {demo_race(WideRacyCounter, times=N_WIDE):>9,} / {4 * N_WIDE:,}")
+
     try:
         benchmark()
     except NotImplementedError:
-        print("\n  (benchmark skipped — implement Task 1 first)")
-    # send_big_payload()      # uncomment for task 4b
+        print("\nBenchmark skipped: implement Task 1 first.")
+
+    # run_processes(lambda x: x * x, range(4))  # Task 4a
+    # send_big_payload()  # Task 4b
